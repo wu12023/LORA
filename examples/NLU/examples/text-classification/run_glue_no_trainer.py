@@ -4,7 +4,6 @@ import logging
 import math
 import os
 import random
-import copy
 
 import datasets
 from datasets import load_dataset, load_metric
