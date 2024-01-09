@@ -4,7 +4,7 @@ import logging
 import math
 import os
 import random
-
+import torch
 import datasets
 from datasets import load_dataset, load_metric
 from torch.utils.data.dataloader import DataLoader
@@ -344,14 +344,24 @@ def main():
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
     else:
         args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
+    
+    warmup_ratio = 0.06
+    n_steps = len(train_dataloader) * args.num_train_epochs
+    warmup_steps = warmup_ratio * n_steps
+    # criteria = nn.CrossEntropyLoss()
 
-    lr_scheduler = get_scheduler(
-        name=args.lr_scheduler_type,
-        optimizer=optimizer,
-        num_warmup_steps=args.num_warmup_steps,
-        num_training_steps=args.max_train_steps,
-    )
-
+    def lr_lambda(current_step):
+        if current_step <= warmup_steps:
+            return (current_step + 1) / max(1, warmup_steps)
+        else:
+            return (n_steps - current_step) / (max(1, n_steps - warmup_steps))
+    # lr_scheduler = get_scheduler(
+    #     name=args.lr_scheduler_type,
+    #     optimizer=optimizer,
+    #     num_warmup_steps=args.num_warmup_steps,
+    #     num_training_steps=args.max_train_steps,
+    # )
+    lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)    
     # Get the metric function
     if args.task_name is not None:
         metric = load_metric("glue", args.task_name)
