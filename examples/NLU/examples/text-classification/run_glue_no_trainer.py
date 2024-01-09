@@ -1,23 +1,10 @@
-# coding=utf-8
-# Copyright 2021 The HuggingFace Inc. team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 """ Finetuning a 🤗 Transformers model for sequence classification on GLUE."""
 import argparse
 import logging
 import math
 import os
 import random
+import copy
 
 import datasets
 from datasets import load_dataset, load_metric
@@ -26,6 +13,7 @@ from tqdm.auto import tqdm
 
 import transformers
 from accelerate import Accelerator
+
 from transformers import (
     AdamW,
     AutoConfig,
@@ -326,7 +314,8 @@ def main():
         train_dataset, shuffle=True, collate_fn=data_collator, batch_size=args.per_device_train_batch_size
     )
     eval_dataloader = DataLoader(eval_dataset, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size)
-
+    for name,params in model.named_parameters():
+        params.requires_grad = True
     # Optimizer
     # Split weights in two groups, one with weight decay and the other not.
     no_decay = ["bias", "LayerNorm.weight"]
@@ -381,7 +370,6 @@ def main():
     # Only show the progress bar once on each machine.
     progress_bar = tqdm(range(args.max_train_steps), disable=not accelerator.is_local_main_process)
     completed_steps = 0
-
     for epoch in range(args.num_train_epochs):
         model.train()
         for step, batch in enumerate(train_dataloader):
@@ -398,6 +386,7 @@ def main():
 
             if completed_steps >= args.max_train_steps:
                 break
+        
 
         model.eval()
         for step, batch in enumerate(eval_dataloader):

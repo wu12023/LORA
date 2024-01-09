@@ -1,20 +1,4 @@
-#!/usr/bin/env python
-# coding=utf-8
-# Copyright 2020 The HuggingFace Inc. team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 """ Finetuning the library models for sequence classification on GLUE."""
-# You can also adapt this script on your own text classification task. Pointers for this are left as comments.
 
 import logging
 import os
@@ -44,6 +28,29 @@ from transformers import (
 from transformers.trainer_utils import get_last_checkpoint, is_main_process
 from transformers.utils import check_min_version
 
+from transformers import TrainerCallback
+
+def get_submodule(model, submodule_path):
+    submodule = model
+    for sub_name in submodule_path.split('.'):
+        submodule = getattr(submodule, sub_name)
+    return submodule
+
+class DeltaLoRACallback(TrainerCallback):
+    def on_step_end(self, args, state, control, **kwargs):
+        model = kwargs.get("model")
+        
+        if model.training:
+            for name, param in model.named_parameters():
+                if "lora_A" in name:
+                    print(name)
+                    layer_name = name.rsplit('.', 1)[0]  # 获取包含lora_A或lora_B的层的名称
+                    layer = get_submodule(model, layer_name)  # 安全地获取层对象
+                    if hasattr(layer, 'apply_delta_lora_updates') and callable(getattr(layer, 'apply_delta_lora_updates')):
+                        layer.apply_delta_lora_updates()
+                        print(f"Applied Delta-LoRA updates to layer: {layer_name}")
+            
+       
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 check_min_version("4.4.0")
@@ -403,8 +410,8 @@ def main():
             assert len(unexpected_keys) == 0, 'Unexpected keys ' + str(unexpected_keys)
         trainable_params.append('adapter')
 
-    if model_args.apply_bitfit:
-        trainable_params.append('bias')
+    # if model_args.apply_bitfit:
+    #     trainable_params.append('bias')
 
     if len(trainable_params) > 0:
         for name, param in model.named_parameters():
@@ -416,6 +423,7 @@ def main():
                         break
             else:
                 param.requires_grad = True
+                # param.requires_grad = False ### TODO: frozen for classifier layer
 
     # Preprocessing the datasets
     if data_args.task_name is not None:
@@ -542,6 +550,7 @@ def main():
         compute_metrics=compute_metrics,
         tokenizer=tokenizer,
         data_collator=data_collator,
+        # callbacks=[DeltaLoRACallback()],
     )
 
     # Training

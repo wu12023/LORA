@@ -1,4 +1,10 @@
 ---
+# This YAML file is used to configure the execution of the python script "run_glue.py" for text classification.
+# It specifies the image to use, the command to run, and the parameters to pass to the script.
+# The parameters include the model type, model name or path, task name, maximum sequence length, batch sizes, learning rate, and other training settings.
+# The file also defines the default values for the parameters and provides descriptions for each parameter.
+# Additionally, it specifies the evaluation strategy and the output directory for saving the checkpoints.
+---
 
 - step:
     name: Execute python examples/text-classification/run_glue.py

@@ -1,0 +1,14 @@
+{
+    "epoch": 25.0,
+    "init_mem_cpu_alloc_delta": 3828551,
+    "init_mem_cpu_peaked_delta": 18306,
+    "init_mem_gpu_alloc_delta": 501066752,
+    "init_mem_gpu_peaked_delta": 0,
+    "train_mem_cpu_alloc_delta": 20551745,
+    "train_mem_cpu_peaked_delta": 13197947,
+    "train_mem_gpu_alloc_delta": 512,
+    "train_mem_gpu_peaked_delta": 0,
+    "train_runtime": 10.2705,
+    "train_samples": 363846,
+    "train_samples_per_second": 55355.076
+}
