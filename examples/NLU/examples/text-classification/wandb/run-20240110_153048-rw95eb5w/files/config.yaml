@@ -35,7 +35,7 @@ tie_encoder_decoder:
   value: false
 max_length:
   desc: null
-  value: 256
+  value: 512
 min_length:
   desc: null
   value: 0
@@ -212,6 +212,9 @@ transformers_version:
 task_name:
   desc: null
   value: cola
+wandb_name:
+  desc: null
+  value: olddelta_lora_fp16
 train_file:
   desc: null
   value: null
@@ -229,13 +232,16 @@ use_slow_tokenizer:
   value: false
 per_device_train_batch_size:
   desc: null
-  value: 64
+  value: 32
 per_device_eval_batch_size:
   desc: null
   value: 8
 learning_rate:
   desc: null
   value: 0.0004
+warmup_ratio:
+  desc: null
+  value: 0.06
 weight_decay:
   desc: null
   value: 0.1
@@ -244,7 +250,7 @@ num_train_epochs:
   value: 80
 max_train_steps:
   desc: null
-  value: 10720
+  value: 21440
 gradient_accumulation_steps:
   desc: null
   value: 1
@@ -269,7 +275,7 @@ _wandb:
     huggingface_version: 4.4.2
     is_jupyter_run: false
     is_kaggle_kernel: false
-    start_time: 1704862390.138948
+    start_time: 1704871848.183493
     t:
       1:
       - 1
@@ -288,6 +294,7 @@ _wandb:
       - 55
       - 71
       3:
+      - 1
       - 13
       - 16
       - 23

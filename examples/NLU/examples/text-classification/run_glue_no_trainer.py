@@ -55,7 +55,7 @@ def apply_delta_lora_updates(model):
                 layer = get_submodule(model, layer_name)  # 安全地获取层对象
                 if hasattr(layer, 'apply_delta_lora_updates') and callable(getattr(layer, 'apply_delta_lora_updates')):
                     layer.apply_delta_lora_updates()
-                    print(f"Applied Delta-LoRA updates to layer: {layer_name}")
+                    # print(f"Applied Delta-LoRA updates to layer: {layer_name}")
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Finetune a transformers model on a text classification task")
@@ -65,6 +65,12 @@ def parse_args():
         default=None,
         help="The name of the glue task to train on.",
         choices=list(task_to_keys.keys()),
+    )
+    parser.add_argument(
+        "--wandb_name",
+        type=str,
+        required=True,
+        help="The name of the glue task to train on.",
     )
     parser.add_argument(
         "--train_file", type=str, default=None, help="A csv or a json file containing the training data."
@@ -113,6 +119,12 @@ def parse_args():
         "--learning_rate",
         type=float,
         default=5e-5,
+        help="Initial learning rate (after the potential warmup period) to use.",
+    )
+    parser.add_argument(
+        "--warmup_ratio",
+        type=float,
+        default=0.0,
         help="Initial learning rate (after the potential warmup period) to use.",
     )
     parser.add_argument("--weight_decay", type=float, default=0.0, help="Weight decay to use.")
@@ -182,7 +194,7 @@ def main():
     args = parse_args()
 
     # Initialize the accelerator. We will let the accelerator handle device placement for us in this example.
-    accelerator = Accelerator()
+    accelerator = Accelerator(fp16=True)
     # Make one log on every process with the configuration for debugging.
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s -   %(message)s",
@@ -397,7 +409,7 @@ def main():
     else:
         args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
     
-    warmup_ratio = 0.06
+    warmup_ratio = args.warmup_ratio
     n_steps = len(train_dataloader) * args.num_train_epochs
     warmup_steps = warmup_ratio * n_steps
     # criteria = nn.CrossEntropyLoss()
@@ -420,7 +432,7 @@ def main():
     import wandb
     combined_dict = {**model.config.to_dict(), **vars(args)}
     
-    run = wandb.init(project="no_trianer", config=combined_dict, name='olde_delta_lora')
+    run = wandb.init(project="no_trianer", config=combined_dict, name=args.wandb_name)
     # Train!
     total_batch_size = args.per_device_train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
 
@@ -449,7 +461,7 @@ def main():
                 optimizer.zero_grad()
                 progress_bar.update(1)
                 completed_steps += 1
-                # apply_delta_lora_updates(model)
+                apply_delta_lora_updates(model)
             wandb.log({"Training Loss": loss},step=completed_steps)
             wandb.log ({"Learning rate": optimizer.param_groups[0]["lr"]},step=completed_steps)
             wandb.log({"epoch":  epoch},step=completed_steps)
