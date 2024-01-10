@@ -3,7 +3,7 @@
   "adapter_size": null,
   "adapter_type": null,
   "apply_adapter": false,
-  "apply_lora": false,
+  "apply_lora": true,
   "architectures": [
     "RobertaForSequenceClassification"
   ],
@@ -18,8 +18,8 @@
   "initializer_range": 0.02,
   "intermediate_size": 3072,
   "layer_norm_eps": 1e-05,
-  "lora_alpha": null,
-  "lora_r": null,
+  "lora_alpha": 16,
+  "lora_r": 8,
   "max_position_embeddings": 514,
   "model_type": "roberta",
   "num_attention_heads": 12,

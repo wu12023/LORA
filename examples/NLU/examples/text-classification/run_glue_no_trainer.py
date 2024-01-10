@@ -115,6 +115,24 @@ def parse_args():
         help="Number of updates steps to accumulate before performing a backward/update pass.",
     )
     parser.add_argument(
+        "--apply_lora",
+        action='store_true',
+        help="Whether to apply LoRA or not.",
+    )
+    parser.add_argument(
+        "--lora_alpha",
+        type=int,
+        default=None,
+        help="Whether to apply LoRA or not.",
+    )
+    parser.add_argument(
+        "--lora_r",
+        type=int,
+        default=None,
+        help="Whether to apply LoRA or not.",
+    )
+
+    parser.add_argument(
         "--lr_scheduler_type",
         type=SchedulerType,
         default="linear",
@@ -223,7 +241,13 @@ def main():
     #
     # In distributed training, the .from_pretrained methods guarantee that only one local process can concurrently
     # download model & vocab.
-    config = AutoConfig.from_pretrained(args.model_name_or_path, num_labels=num_labels, finetuning_task=args.task_name)
+    config = AutoConfig.from_pretrained(args.model_name_or_path, 
+                                        num_labels=num_labels, 
+                                        finetuning_task=args.task_name,
+                                        apply_lora=args.apply_lora,
+                                        lora_alpha=args.lora_alpha,
+                                        lora_r=args.lora_r,
+                                       )
     tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, use_fast=not args.use_slow_tokenizer)
     model = AutoModelForSequenceClassification.from_pretrained(
         args.model_name_or_path,
@@ -314,18 +338,22 @@ def main():
     )
     eval_dataloader = DataLoader(eval_dataset, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size)
     for name,params in model.named_parameters():
-        params.requires_grad = True
+        if 'lora_A' in name or 'lora_B' in name:
+            params.requires_grad = True
+        else:
+            params.requires_grad = False
     # Optimizer
     # Split weights in two groups, one with weight decay and the other not.
     no_decay = ["bias", "LayerNorm.weight"]
+    lora_param_names = [n for n, p in model.named_parameters() if 'lora_A' in n or 'lora_B' in n]
     optimizer_grouped_parameters = [
         {
-            "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
-            "weight_decay": args.weight_decay,
+            "params": [p for n, p in model.named_parameters() if n in lora_param_names],
+            "weight_decay": args.weight_decay,  # 或者你希望为LoRA参数设定的其他值
         },
         {
-            "params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
-            "weight_decay": 0.0,
+            "params": [p for n, p in model.named_parameters() if n not in lora_param_names],
+            "weight_decay": 0.0,  # 非LoRA参数的权重衰减
         },
     ]
     optimizer = AdamW(optimizer_grouped_parameters, lr=args.learning_rate)
@@ -350,18 +378,18 @@ def main():
     warmup_steps = warmup_ratio * n_steps
     # criteria = nn.CrossEntropyLoss()
 
-    def lr_lambda(current_step):
-        if current_step <= warmup_steps:
-            return (current_step + 1) / max(1, warmup_steps)
-        else:
-            return (n_steps - current_step) / (max(1, n_steps - warmup_steps))
-    # lr_scheduler = get_scheduler(
-    #     name=args.lr_scheduler_type,
-    #     optimizer=optimizer,
-    #     num_warmup_steps=args.num_warmup_steps,
-    #     num_training_steps=args.max_train_steps,
-    # )
-    lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)    
+    # def lr_lambda(current_step):
+    #     if current_step <= warmup_steps:
+    #         return (current_step + 1) / max(1, warmup_steps)
+    #     else:
+    #         return (n_steps - current_step) / (max(1, n_steps - warmup_steps))
+    lr_scheduler = get_scheduler(
+        name=args.lr_scheduler_type,
+        optimizer=optimizer,
+        num_warmup_steps=warmup_steps,
+        num_training_steps=args.max_train_steps,
+    )
+    # lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)    
     # Get the metric function
     if args.task_name is not None:
         metric = load_metric("glue", args.task_name)
