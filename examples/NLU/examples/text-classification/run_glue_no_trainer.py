@@ -432,7 +432,7 @@ def main():
     import wandb
     combined_dict = {**model.config.to_dict(), **vars(args)}
     
-    run = wandb.init(project="no_trianer", config=combined_dict, name=args.wandb_name)
+    run = wandb.init(project="cola", config=combined_dict, name=args.wandb_name)
     # Train!
     total_batch_size = args.per_device_train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
 
