@@ -40,7 +40,22 @@ task_to_keys = {
     "stsb": ("sentence1", "sentence2"),
     "wnli": ("sentence1", "sentence2"),
 }
+def get_submodule(model, submodule_path):
+    submodule = model
+    for sub_name in submodule_path.split('.'):
+        submodule = getattr(submodule, sub_name)
+    return submodule
 
+def apply_delta_lora_updates(model):
+    if model.training:
+        for name, param in model.named_parameters():
+            if "lora_A" in name:
+                print(name)
+                layer_name = name.rsplit('.', 1)[0]  # 获取包含lora_A或lora_B的层的名称
+                layer = get_submodule(model, layer_name)  # 安全地获取层对象
+                if hasattr(layer, 'apply_delta_lora_updates') and callable(getattr(layer, 'apply_delta_lora_updates')):
+                    layer.apply_delta_lora_updates()
+                    print(f"Applied Delta-LoRA updates to layer: {layer_name}")
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Finetune a transformers model on a text classification task")
@@ -344,19 +359,28 @@ def main():
             params.requires_grad = False
     # Optimizer
     # Split weights in two groups, one with weight decay and the other not.
-    no_decay = ["bias", "LayerNorm.weight"]
-    lora_param_names = [n for n, p in model.named_parameters() if 'lora_A' in n or 'lora_B' in n]
-    optimizer_grouped_parameters = [
-        {
-            "params": [p for n, p in model.named_parameters() if n in lora_param_names],
-            "weight_decay": args.weight_decay,  # 或者你希望为LoRA参数设定的其他值
-        },
-        {
-            "params": [p for n, p in model.named_parameters() if n not in lora_param_names],
-            "weight_decay": 0.0,  # 非LoRA参数的权重衰减
-        },
-    ]
-    optimizer = AdamW(optimizer_grouped_parameters, lr=args.learning_rate)
+    # no_decay = ["bias", "LayerNorm.weight"]
+    trainable_params = ['lora']
+
+    parameters_to_optimize = []
+    for name, param in model.named_parameters():
+        if name.startswith('deberta') or name.startswith('roberta'):
+            param.requires_grad = False
+            for trainable_param in trainable_params:
+                if trainable_param in name:
+                    param.requires_grad = True
+                    break
+    else:
+        param.requires_grad = True
+ 
+    for name, param in model.named_parameters():
+        if name.startswith('deberta') or name.startswith('roberta'):
+            if any(trainable_param in name for trainable_param in trainable_params):
+                parameters_to_optimize.append(param)
+        else:
+            parameters_to_optimize.append(param)
+    
+    optimizer = AdamW(parameters_to_optimize, lr=args.learning_rate,weight_decay=args.weight_decay)
 
     # Prepare everything with our `accelerator`.
     model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
@@ -393,7 +417,10 @@ def main():
     # Get the metric function
     if args.task_name is not None:
         metric = load_metric("glue", args.task_name)
-
+    import wandb
+    combined_dict = {**model.config.to_dict(), **vars(args)}
+    
+    run = wandb.init(project="no_trianer", config=combined_dict, name='olde_delta_lora')
     # Train!
     total_batch_size = args.per_device_train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
 
@@ -407,6 +434,8 @@ def main():
     # Only show the progress bar once on each machine.
     progress_bar = tqdm(range(args.max_train_steps), disable=not accelerator.is_local_main_process)
     completed_steps = 0
+    
+    run.watch(model) # use wandb to watch the model parameters
     for epoch in range(args.num_train_epochs):
         model.train()
         for step, batch in enumerate(train_dataloader):
@@ -420,7 +449,10 @@ def main():
                 optimizer.zero_grad()
                 progress_bar.update(1)
                 completed_steps += 1
-
+                # apply_delta_lora_updates(model)
+            wandb.log({"Training Loss": loss},step=completed_steps)
+            wandb.log ({"Learning rate": optimizer.param_groups[0]["lr"]},step=completed_steps)
+            wandb.log({"epoch":  epoch},step=completed_steps)
             if completed_steps >= args.max_train_steps:
                 break
         
@@ -433,9 +465,9 @@ def main():
                 predictions=accelerator.gather(predictions),
                 references=accelerator.gather(batch["labels"]),
             )
-
         eval_metric = metric.compute()
         logger.info(f"epoch {epoch}: {eval_metric}")
+        wandb.log({"eval_metroc": eval_metric},step=completed_steps)
 
     if args.output_dir is not None:
         accelerator.wait_for_everyone()

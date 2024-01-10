@@ -24,6 +24,7 @@ __pycache__/
 
 # wandb cache
 *.wandb
+/home/wuyujia/LoRA/examples/NLU/examples/text-classification/wandb/*
 
 # Distribution / packaging
 .Python

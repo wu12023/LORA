@@ -1,6 +1,6 @@
 export TASK_NAME=cola
 
-python run_glue_no_trainer.py \
+CUDA_VISIBLE_DEVICES=2 python run_glue_no_trainer.py \
   --model_name_or_path roberta-base \
   --task_name $TASK_NAME \
   --max_length 512 \
