@@ -1,8 +1,8 @@
 export TASK_NAME=cola
 
-CUDA_VISIBLE_DEVICES=0 python run_glue_no_trainer.py \
+TOKENIZERS_PARALLELISM=false python run_glue_no_trainer.py \
   --model_name_or_path roberta-base \
-  --wandb_name olddelta_lora_fp16\
+  --wandb_name olddelta_lora_bf16\
   --task_name $TASK_NAME \
   --max_length 512 \
   --per_device_train_batch_size 32 \

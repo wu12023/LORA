@@ -194,7 +194,7 @@ def main():
     args = parse_args()
 
     # Initialize the accelerator. We will let the accelerator handle device placement for us in this example.
-    accelerator = Accelerator(fp16=True)
+    accelerator = Accelerator()
     # Make one log on every process with the configuration for debugging.
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s -   %(message)s",
@@ -461,7 +461,7 @@ def main():
                 optimizer.zero_grad()
                 progress_bar.update(1)
                 completed_steps += 1
-                apply_delta_lora_updates(model)
+                # apply_delta_lora_updates(model)
             wandb.log({"Training Loss": loss},step=completed_steps)
             wandb.log ({"Learning rate": optimizer.param_groups[0]["lr"]},step=completed_steps)
             wandb.log({"epoch":  epoch},step=completed_steps)
