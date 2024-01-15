@@ -9,8 +9,9 @@ import datasets
 from datasets import load_dataset, load_metric
 from torch.utils.data.dataloader import DataLoader
 from tqdm.auto import tqdm
-
+import random
 import transformers
+
 from accelerate import Accelerator
 
 from transformers import (
@@ -46,15 +47,15 @@ def get_submodule(model, submodule_path):
         submodule = getattr(submodule, sub_name)
     return submodule
 
-def apply_delta_lora_updates(model):
+def apply_delta_lora_updates(model,scale):
     if model.training:
         for name, param in model.named_parameters():
             if "lora_A" in name:
-                print(name)
+                # print(name)
                 layer_name = name.rsplit('.', 1)[0]  # 获取包含lora_A或lora_B的层的名称
                 layer = get_submodule(model, layer_name)  # 安全地获取层对象
                 if hasattr(layer, 'apply_delta_lora_updates') and callable(getattr(layer, 'apply_delta_lora_updates')):
-                    layer.apply_delta_lora_updates()
+                    layer.apply_delta_lora_updates(scale)
                     # print(f"Applied Delta-LoRA updates to layer: {layer_name}")
 
 def parse_args():
@@ -212,299 +213,382 @@ def main():
     else:
         datasets.utils.logging.set_verbosity_error()
         transformers.utils.logging.set_verbosity_error()
-
+    best_score = 0.0
+    best_seed = 0
     # If passed along, set the training seed now.
-    if args.seed is not None:
-        set_seed(args.seed)
+    while(True):
+        if args.seed is not None:
+            seed = random.randint(0, 100000)
+            set_seed(seed)
 
-    # Get the datasets: you can either provide your own CSV/JSON training and evaluation files (see below)
-    # or specify a GLUE benchmark task (the dataset will be downloaded automatically from the datasets Hub).
+        # Get the datasets: you can either provide your own CSV/JSON training and evaluation files (see below)
+        # or specify a GLUE benchmark task (the dataset will be downloaded automatically from the datasets Hub).
 
-    # For CSV/JSON files, this script will use as labels the column called 'label' and as pair of sentences the
-    # sentences in columns called 'sentence1' and 'sentence2' if such column exists or the first two columns not named
-    # label if at least two columns are provided.
+        # For CSV/JSON files, this script will use as labels the column called 'label' and as pair of sentences the
+        # sentences in columns called 'sentence1' and 'sentence2' if such column exists or the first two columns not named
+        # label if at least two columns are provided.
 
-    # If the CSVs/JSONs contain only one non-label column, the script does single sentence classification on this
-    # single column. You can easily tweak this behavior (see below)
+        # If the CSVs/JSONs contain only one non-label column, the script does single sentence classification on this
+        # single column. You can easily tweak this behavior (see below)
 
-    # In distributed training, the load_dataset function guarantee that only one local process can concurrently
-    # download the dataset.
-    if args.task_name is not None:
-        # Downloading and loading a dataset from the hub.
-        raw_datasets = load_dataset("glue", args.task_name)
-    else:
-        # Loading the dataset from local csv or json file.
-        data_files = {}
-        if args.train_file is not None:
-            data_files["train"] = args.train_file
-        if args.validation_file is not None:
-            data_files["validation"] = args.validation_file
-        extension = (args.train_file if args.train_file is not None else args.valid_file).split(".")[-1]
-        raw_datasets = load_dataset(extension, data_files=data_files)
-    # See more about loading any type of standard or custom dataset at
-    # https://huggingface.co/docs/datasets/loading_datasets.html.
-
-    # Labels
-    if args.task_name is not None:
-        is_regression = args.task_name == "stsb"
-        if not is_regression:
-            label_list = raw_datasets["train"].features["label"].names
-            num_labels = len(label_list)
+        # In distributed training, the load_dataset function guarantee that only one local process can concurrently
+        # download the dataset.
+        if args.task_name is not None:
+            # Downloading and loading a dataset from the hub.
+            raw_datasets = load_dataset("glue", args.task_name)
         else:
-            num_labels = 1
-    else:
-        # Trying to have good defaults here, don't hesitate to tweak to your needs.
-        is_regression = datasets["train"].features["label"].dtype in ["float32", "float64"]
-        if is_regression:
-            num_labels = 1
-        else:
-            # A useful fast method:
-            # https://huggingface.co/docs/datasets/package_reference/main_classes.html#datasets.Dataset.unique
-            label_list = datasets["train"].unique("label")
-            label_list.sort()  # Let's sort it for determinism
-            num_labels = len(label_list)
+            # Loading the dataset from local csv or json file.
+            data_files = {}
+            if args.train_file is not None:
+                data_files["train"] = args.train_file
+            if args.validation_file is not None:
+                data_files["validation"] = args.validation_file
+            extension = (args.train_file if args.train_file is not None else args.valid_file).split(".")[-1]
+            raw_datasets = load_dataset(extension, data_files=data_files)
+        # See more about loading any type of standard or custom dataset at
+        # https://huggingface.co/docs/datasets/loading_datasets.html.
 
-    # Load pretrained model and tokenizer
-    #
-    # In distributed training, the .from_pretrained methods guarantee that only one local process can concurrently
-    # download model & vocab.
-    config = AutoConfig.from_pretrained(args.model_name_or_path, 
-                                        num_labels=num_labels, 
-                                        finetuning_task=args.task_name,
-                                        apply_lora=args.apply_lora,
-                                        lora_alpha=args.lora_alpha,
-                                        lora_r=args.lora_r,
-                                       )
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, use_fast=not args.use_slow_tokenizer)
-    model = AutoModelForSequenceClassification.from_pretrained(
-        args.model_name_or_path,
-        from_tf=bool(".ckpt" in args.model_name_or_path),
-        config=config,
-    )
-
-    # Preprocessing the datasets
-    if args.task_name is not None:
-        sentence1_key, sentence2_key = task_to_keys[args.task_name]
-    else:
-        # Again, we try to have some nice defaults but don't hesitate to tweak to your use case.
-        non_label_column_names = [name for name in datasets["train"].column_names if name != "label"]
-        if "sentence1" in non_label_column_names and "sentence2" in non_label_column_names:
-            sentence1_key, sentence2_key = "sentence1", "sentence2"
-        else:
-            if len(non_label_column_names) >= 2:
-                sentence1_key, sentence2_key = non_label_column_names[:2]
+        # Labels
+        if args.task_name is not None:
+            is_regression = args.task_name == "stsb"
+            if not is_regression:
+                label_list = raw_datasets["train"].features["label"].names
+                num_labels = len(label_list)
             else:
-                sentence1_key, sentence2_key = non_label_column_names[0], None
-
-    # Some models have set the order of the labels to use, so let's make sure we do use it.
-    label_to_id = None
-    if (
-        model.config.label2id != PretrainedConfig(num_labels=num_labels).label2id
-        and args.task_name is not None
-        and not is_regression
-    ):
-        # Some have all caps in their config, some don't.
-        label_name_to_id = {k.lower(): v for k, v in model.config.label2id.items()}
-        if list(sorted(label_name_to_id.keys())) == list(sorted(label_list)):
-            logger.info(
-                f"The configuration of the model provided the following label correspondence: {label_name_to_id}. "
-                "Using it!"
-            )
-            label_to_id = {i: label_name_to_id[label_list[i]] for i in range(num_labels)}
+                num_labels = 1
         else:
-            logger.warn(
-                "Your model seems to have been trained with labels, but they don't match the dataset: ",
-                f"model labels: {list(sorted(label_name_to_id.keys()))}, dataset labels: {list(sorted(label_list))}."
-                "\nIgnoring the model labels as a result.",
-            )
-    elif args.task_name is None:
-        label_to_id = {v: i for i, v in enumerate(label_list)}
+            # Trying to have good defaults here, don't hesitate to tweak to your needs.
+            is_regression = datasets["train"].features["label"].dtype in ["float32", "float64"]
+            if is_regression:
+                num_labels = 1
+            else:
+                # A useful fast method:
+                # https://huggingface.co/docs/datasets/package_reference/main_classes.html#datasets.Dataset.unique
+                label_list = datasets["train"].unique("label")
+                label_list.sort()  # Let's sort it for determinism
+                num_labels = len(label_list)
 
-    padding = "max_length" if args.pad_to_max_length else False
-
-    def preprocess_function(examples):
-        # Tokenize the texts
-        texts = (
-            (examples[sentence1_key],) if sentence2_key is None else (examples[sentence1_key], examples[sentence2_key])
+        # Load pretrained model and tokenizer
+        #
+        # In distributed training, the .from_pretrained methods guarantee that only one local process can concurrently
+        # download model & vocab.
+        config = AutoConfig.from_pretrained(args.model_name_or_path, 
+                                            num_labels=num_labels, 
+                                            finetuning_task=args.task_name,
+                                            apply_lora=args.apply_lora,
+                                            lora_alpha=args.lora_alpha,
+                                            lora_r=args.lora_r,
+                                        )
+        tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, use_fast=not args.use_slow_tokenizer)
+        model = AutoModelForSequenceClassification.from_pretrained(
+            args.model_name_or_path,
+            from_tf=bool(".ckpt" in args.model_name_or_path),
+            config=config,
         )
-        result = tokenizer(*texts, padding=padding, max_length=args.max_length, truncation=True)
 
-        if "label" in examples:
-            if label_to_id is not None:
-                # Map labels to IDs (not necessary for GLUE tasks)
-                result["labels"] = [label_to_id[l] for l in examples["label"]]
-            else:
-                # In all cases, rename the column to labels because the model will expect that.
-                result["labels"] = examples["label"]
-        return result
-
-    processed_datasets = raw_datasets.map(
-        preprocess_function, batched=True, remove_columns=raw_datasets["train"].column_names
-    )
-
-    train_dataset = processed_datasets["train"]
-    eval_dataset = processed_datasets["validation_matched" if args.task_name == "mnli" else "validation"]
-
-    # Log a few random samples from the training set:
-    for index in random.sample(range(len(train_dataset)), 3):
-        logger.info(f"Sample {index} of the training set: {train_dataset[index]}.")
-
-    # DataLoaders creation:
-    if args.pad_to_max_length:
-        # If padding was already done ot max length, we use the default data collator that will just convert everything
-        # to tensors.
-        data_collator = default_data_collator
-    else:
-        # Otherwise, `DataCollatorWithPadding` will apply dynamic padding for us (by padding to the maximum length of
-        # the samples passed). When using mixed precision, we add `pad_to_multiple_of=8` to pad all tensors to multiple
-        # of 8s, which will enable the use of Tensor Cores on NVIDIA hardware with compute capability >= 7.5 (Volta).
-        data_collator = DataCollatorWithPadding(tokenizer, pad_to_multiple_of=(8 if accelerator.use_fp16 else None))
-
-    train_dataloader = DataLoader(
-        train_dataset, shuffle=True, collate_fn=data_collator, batch_size=args.per_device_train_batch_size
-    )
-    eval_dataloader = DataLoader(eval_dataset, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size)
-    for name,params in model.named_parameters():
-        if 'lora_A' in name or 'lora_B' in name:
-            params.requires_grad = True
+        # Preprocessing the datasets
+        if args.task_name is not None:
+            sentence1_key, sentence2_key = task_to_keys[args.task_name]
         else:
-            params.requires_grad = False
-    # Optimizer
-    # Split weights in two groups, one with weight decay and the other not.
-    # no_decay = ["bias", "LayerNorm.weight"]
-    trainable_params = ['lora']
+            # Again, we try to have some nice defaults but don't hesitate to tweak to your use case.
+            non_label_column_names = [name for name in datasets["train"].column_names if name != "label"]
+            if "sentence1" in non_label_column_names and "sentence2" in non_label_column_names:
+                sentence1_key, sentence2_key = "sentence1", "sentence2"
+            else:
+                if len(non_label_column_names) >= 2:
+                    sentence1_key, sentence2_key = non_label_column_names[:2]
+                else:
+                    sentence1_key, sentence2_key = non_label_column_names[0], None
 
-    parameters_to_optimize = []
-    for name, param in model.named_parameters():
-        if name.startswith('deberta') or name.startswith('roberta'):
-            param.requires_grad = False
-            for trainable_param in trainable_params:
-                if trainable_param in name:
-                    param.requires_grad = True
-                    break
-    else:
-        param.requires_grad = True
- 
-    for name, param in model.named_parameters():
-        if name.startswith('deberta') or name.startswith('roberta'):
-            if any(trainable_param in name for trainable_param in trainable_params):
+        # Some models have set the order of the labels to use, so let's make sure we do use it.
+        label_to_id = None
+        if (
+            model.config.label2id != PretrainedConfig(num_labels=num_labels).label2id
+            and args.task_name is not None
+            and not is_regression
+        ):
+            # Some have all caps in their config, some don't.
+            label_name_to_id = {k.lower(): v for k, v in model.config.label2id.items()}
+            if list(sorted(label_name_to_id.keys())) == list(sorted(label_list)):
+                logger.info(
+                    f"The configuration of the model provided the following label correspondence: {label_name_to_id}. "
+                    "Using it!"
+                )
+                label_to_id = {i: label_name_to_id[label_list[i]] for i in range(num_labels)}
+            else:
+                logger.warn(
+                    "Your model seems to have been trained with labels, but they don't match the dataset: ",
+                    f"model labels: {list(sorted(label_name_to_id.keys()))}, dataset labels: {list(sorted(label_list))}."
+                    "\nIgnoring the model labels as a result.",
+                )
+        elif args.task_name is None:
+            label_to_id = {v: i for i, v in enumerate(label_list)}
+
+        padding = "max_length" if args.pad_to_max_length else False
+
+        def preprocess_function(examples):
+            # Tokenize the texts
+            texts = (
+                (examples[sentence1_key],) if sentence2_key is None else (examples[sentence1_key], examples[sentence2_key])
+            )
+            result = tokenizer(*texts, padding=padding, max_length=args.max_length, truncation=True)
+
+            if "label" in examples:
+                if label_to_id is not None:
+                    # Map labels to IDs (not necessary for GLUE tasks)
+                    result["labels"] = [label_to_id[l] for l in examples["label"]]
+                else:
+                    # In all cases, rename the column to labels because the model will expect that.
+                    result["labels"] = examples["label"]
+            return result
+
+        processed_datasets = raw_datasets.map(
+            preprocess_function, batched=True, remove_columns=raw_datasets["train"].column_names
+        )
+
+        train_dataset = processed_datasets["train"]
+        eval_dataset = processed_datasets["validation_matched" if args.task_name == "mnli" else "validation"]
+
+        # Log a few random samples from the training set:
+        for index in random.sample(range(len(train_dataset)), 3):
+            logger.info(f"Sample {index} of the training set: {train_dataset[index]}.")
+
+        # DataLoaders creation:
+        if args.pad_to_max_length:
+            # If padding was already done ot max length, we use the default data collator that will just convert everything
+            # to tensors.
+            data_collator = default_data_collator
+        else:
+            # Otherwise, `DataCollatorWithPadding` will apply dynamic padding for us (by padding to the maximum length of
+            # the samples passed). When using mixed precision, we add `pad_to_multiple_of=8` to pad all tensors to multiple
+            # of 8s, which will enable the use of Tensor Cores on NVIDIA hardware with compute capability >= 7.5 (Volta).
+            data_collator = DataCollatorWithPadding(tokenizer, pad_to_multiple_of=(8 if accelerator.use_fp16 else None))
+
+        train_dataloader = DataLoader(
+            train_dataset, shuffle=True, collate_fn=data_collator, batch_size=args.per_device_train_batch_size
+        )
+        eval_dataloader = DataLoader(eval_dataset, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size)
+
+        # Optimizer
+        # Split weights in two groups, one with weight decay and the other not.
+        # no_decay = ["bias", "LayerNorm.weight"]
+        trainable_params = ['lora_B']
+
+        parameters_to_optimize = []
+        for name, param in model.named_parameters():
+            if name.startswith('deberta') or name.startswith('roberta'):
+                param.requires_grad = False
+                for trainable_param in trainable_params:
+                    if trainable_param in name:
+                        param.requires_grad = True
+                        break
+            else:
+                param.requires_grad = True
+
+            
+        for name, param in model.named_parameters():
+            if name.startswith('deberta') or name.startswith('roberta'):
+                for trainable_param in trainable_params:
+                    if trainable_param in name:
+                        parameters_to_optimize.append(param)
+            else:
                 parameters_to_optimize.append(param)
-        else:
-            parameters_to_optimize.append(param)
-    
-    optimizer = AdamW(parameters_to_optimize, lr=args.learning_rate,weight_decay=args.weight_decay)
-
-    # Prepare everything with our `accelerator`.
-    model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
-        model, optimizer, train_dataloader, eval_dataloader
-    )
-
-    # Note -> the training dataloader needs to be prepared before we grab his length below (cause its length will be
-    # shorter in multiprocess)
-
-    # Scheduler and math around the number of training steps.
-    num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
-    if args.max_train_steps is None:
-        args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
-    else:
-        args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
-    
-    warmup_ratio = args.warmup_ratio
-    n_steps = len(train_dataloader) * args.num_train_epochs
-    warmup_steps = warmup_ratio * n_steps
-    # criteria = nn.CrossEntropyLoss()
-
-    # def lr_lambda(current_step):
-    #     if current_step <= warmup_steps:
-    #         return (current_step + 1) / max(1, warmup_steps)
-    #     else:
-    #         return (n_steps - current_step) / (max(1, n_steps - warmup_steps))
-    lr_scheduler = get_scheduler(
-        name=args.lr_scheduler_type,
-        optimizer=optimizer,
-        num_warmup_steps=warmup_steps,
-        num_training_steps=args.max_train_steps,
-    )
-    # lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)    
-    # Get the metric function
-    if args.task_name is not None:
-        metric = load_metric("glue", args.task_name)
-    import wandb
-    combined_dict = {**model.config.to_dict(), **vars(args)}
-    
-    run = wandb.init(project="cola", config=combined_dict, name=args.wandb_name)
-    # Train!
-    total_batch_size = args.per_device_train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
-
-    logger.info("***** Running training *****")
-    logger.info(f"  Num examples = {len(train_dataset)}")
-    logger.info(f"  Num Epochs = {args.num_train_epochs}")
-    logger.info(f"  Instantaneous batch size per device = {args.per_device_train_batch_size}")
-    logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
-    logger.info(f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
-    logger.info(f"  Total optimization steps = {args.max_train_steps}")
-    # Only show the progress bar once on each machine.
-    progress_bar = tqdm(range(args.max_train_steps), disable=not accelerator.is_local_main_process)
-    completed_steps = 0
-    
-    run.watch(model) # use wandb to watch the model parameters
-    for epoch in range(args.num_train_epochs):
-        model.train()
-        for step, batch in enumerate(train_dataloader):
-            outputs = model(**batch)
-            loss = outputs.loss
-            loss = loss / args.gradient_accumulation_steps
-            accelerator.backward(loss)
-            if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
-                optimizer.step()
-                lr_scheduler.step()
-                optimizer.zero_grad()
-                progress_bar.update(1)
-                completed_steps += 1
-                # apply_delta_lora_updates(model)
-            wandb.log({"Training Loss": loss},step=completed_steps)
-            wandb.log ({"Learning rate": optimizer.param_groups[0]["lr"]},step=completed_steps)
-            wandb.log({"epoch":  epoch},step=completed_steps)
-            if completed_steps >= args.max_train_steps:
-                break
         
+        optimizer = AdamW(parameters_to_optimize, lr=args.learning_rate,weight_decay=args.weight_decay)
 
-        model.eval()
-        for step, batch in enumerate(eval_dataloader):
-            outputs = model(**batch)
-            predictions = outputs.logits.argmax(dim=-1)
-            metric.add_batch(
-                predictions=accelerator.gather(predictions),
-                references=accelerator.gather(batch["labels"]),
-            )
-        eval_metric = metric.compute()
-        logger.info(f"epoch {epoch}: {eval_metric}")
-        wandb.log({"eval_metroc": eval_metric},step=completed_steps)
-
-    if args.output_dir is not None:
-        accelerator.wait_for_everyone()
-        unwrapped_model = accelerator.unwrap_model(model)
-        unwrapped_model.save_pretrained(args.output_dir, save_function=accelerator.save)
-
-    if args.task_name == "mnli":
-        # Final evaluation on mismatched validation set
-        eval_dataset = processed_datasets["validation_mismatched"]
-        eval_dataloader = DataLoader(
-            eval_dataset, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size
+        # Prepare everything with our `accelerator`.
+        model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
+            model, optimizer, train_dataloader, eval_dataloader
         )
-        eval_dataloader = accelerator.prepare(eval_dataloader)
 
-        model.eval()
-        for step, batch in enumerate(eval_dataloader):
-            outputs = model(**batch)
-            predictions = outputs.logits.argmax(dim=-1)
-            metric.add_batch(
-                predictions=accelerator.gather(predictions),
-                references=accelerator.gather(batch["labels"]),
+        # Note -> the training dataloader needs to be prepared before we grab his length below (cause its length will be
+        # shorter in multiprocess)
+
+        # Scheduler and math around the number of training steps.
+        num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
+        if args.max_train_steps is None:
+            args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
+        else:
+            args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
+        
+        warmup_ratio = args.warmup_ratio
+        n_steps = len(train_dataloader) * args.num_train_epochs
+        warmup_steps = warmup_ratio * n_steps
+        # criteria = nn.CrossEntropyLoss()
+
+        # def lr_lambda(current_step):
+        #     if current_step <= warmup_steps:
+        #         return (current_step + 1) / max(1, warmup_steps)
+        #     else:
+        #         return (n_steps - current_step) / (max(1, n_steps - warmup_steps))
+        lr_scheduler = get_scheduler(
+            name=args.lr_scheduler_type,
+            optimizer=optimizer,
+            num_warmup_steps=warmup_steps,
+            num_training_steps=args.max_train_steps,
+        )
+        # lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)    
+        # Get the metric function
+        if args.task_name is not None:
+            metric = load_metric("glue", args.task_name)
+        import wandb
+        combined_dict = {**model.config.to_dict(), **vars(args)}
+        run = wandb.init(project="different_seeds_sst2", config=combined_dict, name=str(seed))
+        # Train!
+        total_batch_size = args.per_device_train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
+
+        logger.info("***** Running training *****")
+        logger.info(f"  Num examples = {len(train_dataset)}")
+        logger.info(f"  Num Epochs = {args.num_train_epochs}")
+        logger.info(f"  Instantaneous batch size per device = {args.per_device_train_batch_size}")
+        logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
+        logger.info(f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
+        logger.info(f"  Total optimization steps = {args.max_train_steps}")
+        # Only show the progress bar once on each machine.
+        progress_bar = tqdm(range(args.max_train_steps), disable=not accelerator.is_local_main_process)
+        completed_steps = 0
+        # 存储损失值的列表
+        short_term_loss_list = []
+        long_term_loss_list = []
+        scale_factor = 2.0
+        ema_coefficient = 0.9
+        max_scale_factor = 4.0
+        min_scale_factor = 0.2
+        increase_factor = 1.1
+        decrease_factor = 0.9
+        eval_metric_list = []
+        best_metric = 0.0
+        previous_eval_metric = None
+        run.watch(model) # use wandb to watch the model parameters
+        for epoch in range(args.num_train_epochs):
+            model.train()
+            for step, batch in enumerate(train_dataloader):
+                outputs = model(**batch)
+                loss = outputs.loss
+                loss = loss / args.gradient_accumulation_steps
+                accelerator.backward(loss)
+
+                # 将损失值转换为标准Python数值并更新损失列表
+                loss_value = loss.item()  # 从Tensor转换为Python数值
+                short_term_loss_list.append(loss_value)
+                long_term_loss_list.append(loss_value)
+                if len(short_term_loss_list) > 4:
+                    short_term_loss_list.pop(0)
+                if len(long_term_loss_list) > 20:
+                    long_term_loss_list.pop(0)
+
+                if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
+
+                    if len(short_term_loss_list) == 4:
+                        # 短期损失差值计算
+                        diff1 = short_term_loss_list[2] - short_term_loss_list[3]
+                        diff2 = short_term_loss_list[1] - short_term_loss_list[2]
+                        diff3 = short_term_loss_list[0] - short_term_loss_list[1]
+
+                        # 长期趋势分析
+                        long_term_trend = sum(long_term_loss_list) / len(long_term_loss_list)
+                        
+                        scale_factor = scale_factor
+                        old_scale_factor = scale_factor
+                        if diff1 < 0 and diff2 < 0 and diff3 < 0:
+                            if diff1 < diff2 and diff2 < diff3:
+                                # scale_factor = min(scale_factor * 2, max_scale_factor)
+                                scale_factor = 4.0
+                                continue
+                            else:
+                                scale_factor = max(scale_factor * decrease_factor, min_scale_factor)
+                        elif diff1 > 0 and diff2 < 0:
+                            scale_factor = max(scale_factor * decrease_factor, min_scale_factor)
+                        elif diff1 < 0 and diff2 > 0:
+                            scale_factor = min(scale_factor * increase_factor, max_scale_factor)
+                        elif diff1 > 0 and diff2 > 0:
+                            if diff1 > diff2:
+                                scale_factor = max(scale_factor * 0.5, min_scale_factor)
+                            else:
+                                scale_factor = max(scale_factor * decrease_factor, min_scale_factor)
+
+                        # 如果当前损失大于长期趋势，则减少学习率
+                        if loss_value > long_term_trend:
+                            scale_factor = max(scale_factor * decrease_factor, min_scale_factor)                   
+
+                        scale_factor = (ema_coefficient * old_scale_factor) + ((1 - ema_coefficient) * scale_factor)
+                                    
+                    optimizer.step()
+                    lr_scheduler.step()
+                    optimizer.zero_grad()
+                    progress_bar.update(1)
+                    completed_steps += 1
+                    apply_delta_lora_updates(model,scale_factor)
+                wandb.log({"Training Loss": loss},step=completed_steps)
+                wandb.log ({"Learning rate": optimizer.param_groups[0]["lr"]},step=completed_steps)
+                wandb.log({"epoch":  epoch},step=completed_steps)
+                if completed_steps >= args.max_train_steps:
+                    break
+            
+
+            model.eval()
+            for step, batch in enumerate(eval_dataloader):
+                outputs = model(**batch)
+                predictions = outputs.logits.argmax(dim=-1)
+                metric.add_batch(
+                    predictions=accelerator.gather(predictions),
+                    references=accelerator.gather(batch["labels"]),
+                )
+            eval_metric = metric.compute()
+            logger.info(f"epoch {epoch}: {eval_metric}")
+
+
+            # current_eval_metric = eval_metric.get('matthews_correlation', 0)  # 提取指定的评估指标
+            
+            current_eval_metric = eval_metric.get('accuracy', 0)  # 提取指定的评估指标
+            eval_metric_list.append(current_eval_metric)
+            if previous_eval_metric is not None:
+                if current_eval_metric > previous_eval_metric:
+                    if len(eval_metric_list) > 10:
+                        if eval_metric_list[-1] > eval_metric_list[-2] and eval_metric_list[-2] > eval_metric_list[-3]:
+                            increase_factor = min(increase_factor + 0.15, 1.5)
+                            decrease_factor = max(decrease_factor - 0.15, 0.5)
+                        else:
+                            increase_factor = max(increase_factor - 0.05, 1.05)
+                            decrease_factor = min(decrease_factor + 0.05, 0.95)
+                    else:
+                        continue
+                else:
+                    increase_factor = max(increase_factor - 0.05, 1.05)
+                    decrease_factor = min(decrease_factor + 0.05, 0.95)
+            previous_eval_metric = current_eval_metric
+            if current_eval_metric > best_metric:
+                best_metric = current_eval_metric
+            wandb.log({"best_metric":best_metric},step=completed_steps)
+            wandb.log({"eval_metric": eval_metric},step=completed_steps)
+            if best_metric > best_score:
+                best_score = best_metric
+                best_seed = seed
+        if args.output_dir is not None:
+            accelerator.wait_for_everyone()
+            unwrapped_model = accelerator.unwrap_model(model)
+            unwrapped_model.save_pretrained(args.output_dir, save_function=accelerator.save)
+        print(" best_seed", best_seed)
+        wandb.finish()
+        if args.task_name == "mnli":
+            # Final evaluation on mismatched validation set
+            eval_dataset = processed_datasets["validation_mismatched"]
+            eval_dataloader = DataLoader(
+                eval_dataset, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size
             )
+            eval_dataloader = accelerator.prepare(eval_dataloader)
 
-        eval_metric = metric.compute()
-        logger.info(f"mnli-mm: {eval_metric}")
+            model.eval()
+            for step, batch in enumerate(eval_dataloader):
+                outputs = model(**batch)
+                predictions = outputs.logits.argmax(dim=-1)
+                metric.add_batch(
+                    predictions=accelerator.gather(predictions),
+                    references=accelerator.gather(batch["labels"]),
+                )
+
+            eval_metric = metric.compute()
+            logger.info(f"mnli-mm: {eval_metric}")
 
 
 if __name__ == "__main__":
